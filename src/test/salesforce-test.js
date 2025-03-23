@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { getAuthUrl, exchangeCodeForTokens, getValidAccessToken, isTokenExpired } = require('../config/salesforce');
 
 // Test gebruiker ID (in een echte app zou dit een echte user ID zijn)
@@ -54,5 +55,45 @@ async function testSalesforceConnection() {
     }
 }
 
-// Run de tests
-testSalesforceConnection(); 
+async function testOAuthFlow() {
+    try {
+        // 1. Start OAuth flow
+        console.log('1. Start OAuth flow...');
+        const authUrl = getAuthUrl(TEST_USER_ID);
+        console.log('\nOpen deze URL in je browser:');
+        console.log(authUrl);
+        
+        // 2. Wacht op handmatige input van de code
+        console.log('\n2. Na inloggen krijg je een code. Plak die hier en druk op Enter:');
+        
+        // Gebruik readline voor input
+        const readline = require('readline').createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+
+        // Wacht op de code via een Promise
+        const code = await new Promise(resolve => readline.question('Code: ', resolve));
+        readline.close();
+
+        // 3. Wissel de code in voor tokens
+        console.log('\n3. Code wordt omgewisseld voor tokens...');
+        const tokens = await exchangeCodeForTokens(code, TEST_USER_ID);
+        
+        console.log('\nGelukt! Tokens ontvangen:');
+        console.log('- Access Token:', tokens.access_token.substring(0, 10) + '...');
+        console.log('- Instance URL:', tokens.instance_url);
+        console.log('- Verloopt op:', new Date(tokens.expires_at).toLocaleString());
+
+    } catch (error) {
+        console.error('\nError tijdens OAuth flow:', error.message);
+        if (error.response) {
+            console.error('Status:', error.response.status);
+            console.error('Error:', error.response.data);
+        }
+    }
+}
+
+// Run alleen de OAuth flow test
+testOAuthFlow(); 
+// testSalesforceConnection();  // Uitgecommentaard om verwarring te voorkomen 

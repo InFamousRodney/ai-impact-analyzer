@@ -11,6 +11,7 @@ const TOKEN_ENDPOINT = '/services/oauth2/token';
 
 // Token storage file path
 const TOKEN_STORAGE_PATH = path.join(__dirname, '../../.tokens.json');
+const VERIFIER_STORAGE_PATH = path.join(__dirname, '../../.verifiers.json');
 
 // Load tokens from file
 function loadTokens() {
@@ -35,11 +36,34 @@ function saveTokens(tokens) {
     }
 }
 
+// Load verifiers from file
+function loadVerifiers() {
+    try {
+        if (fs.existsSync(VERIFIER_STORAGE_PATH)) {
+            const data = fs.readFileSync(VERIFIER_STORAGE_PATH, 'utf8');
+            return new Map(Object.entries(JSON.parse(data)));
+        }
+    } catch (error) {
+        console.error('Error loading verifiers:', error);
+    }
+    return new Map();
+}
+
+// Save verifiers to file
+function saveVerifiers(verifiers) {
+    try {
+        const data = JSON.stringify(Object.fromEntries(verifiers));
+        fs.writeFileSync(VERIFIER_STORAGE_PATH, data, 'utf8');
+    } catch (error) {
+        console.error('Error saving verifiers:', error);
+    }
+}
+
 // Token storage per gebruiker
 const userTokens = loadTokens();
 
 // PKCE code verifier storage per gebruiker
-const userCodeVerifiers = new Map();
+const userCodeVerifiers = loadVerifiers();
 
 // Custom error classes voor verschillende soorten fouten
 class SalesforceAuthError extends Error {
@@ -62,35 +86,39 @@ class SalesforceTokenError extends Error {
 
 // Helper functie om API errors te analyseren
 function analyzeApiError(error) {
+    console.log('Debug - Full error:', error);  // Debug log
+    
     if (!error.response) {
         // Netwerk error
         return new SalesforceAuthError(
-            'Network error while connecting to Salesforce',
+            `Network error while connecting to Salesforce: ${error.message}`,
             0,
             'NETWORK_ERROR'
         );
     }
 
     const { status, data } = error.response;
+    console.log('Debug - Response status:', status);  // Debug log
+    console.log('Debug - Response data:', data);      // Debug log
     
     // 4xx errors (client errors)
     if (status >= 400 && status < 500) {
         switch (status) {
             case 400:
                 return new SalesforceAuthError(
-                    'Invalid request parameters',
+                    `Invalid request parameters: ${data.error_description || data.error}`,
                     status,
                     data.error || 'INVALID_REQUEST'
                 );
             case 401:
                 return new SalesforceAuthError(
-                    'Authentication failed',
+                    `Authentication failed: ${data.error_description || data.error}`,
                     status,
                     data.error || 'AUTH_FAILED'
                 );
             case 403:
                 return new SalesforceAuthError(
-                    'Insufficient permissions',
+                    `Insufficient permissions: ${data.error_description || data.error}`,
                     status,
                     data.error || 'INSUFFICIENT_PERMISSIONS'
                 );
@@ -106,7 +134,7 @@ function analyzeApiError(error) {
     // 5xx errors (server errors)
     if (status >= 500) {
         return new SalesforceAuthError(
-            'Salesforce server error occurred',
+            `Salesforce server error: ${data.error_description || data.error}`,
             status,
             data.error || 'SERVER_ERROR'
         );
@@ -114,7 +142,7 @@ function analyzeApiError(error) {
 
     // Onbekende errors
     return new SalesforceAuthError(
-        'Unknown error occurred',
+        `Unknown error: ${error.message}`,
         status,
         data.error || 'UNKNOWN_ERROR'
     );
@@ -183,6 +211,7 @@ function getAuthUrl(userId) {
     
     // Sla code verifier op voor deze gebruiker
     userCodeVerifiers.set(userId, codeVerifier);
+    saveVerifiers(userCodeVerifiers);
     
     const params = new URLSearchParams({
         response_type: 'code',
@@ -223,18 +252,21 @@ async function exchangeCodeForTokens(code, userId) {
             }
         });
 
-        userTokens.set(userId, {
+        // Store token with numeric timestamp
+        const newToken = {
             access_token: response.data.access_token,
             refresh_token: response.data.refresh_token,
             instance_url: response.data.instance_url,
             expires_at: Date.now() + (response.data.expires_in * 1000)
-        });
+        };
 
-        // Save tokens after updating
+        userTokens.set(userId, newToken);
         saveTokens(userTokens);
 
         userCodeVerifiers.delete(userId);
-        return userTokens.get(userId);
+        saveVerifiers(userCodeVerifiers);
+        
+        return newToken;
     } catch (error) {
         throw analyzeApiError(error);
     }
@@ -244,19 +276,19 @@ async function exchangeCodeForTokens(code, userId) {
 async function refreshAccessToken(userId) {
     try {
         const userToken = userTokens.get(userId);
-        if (!userToken) {
+        if (!userToken || !userToken.refresh_token) {
             throw new SalesforceTokenError(
-                'No tokens found for this user. Please authenticate first.',
+                'No refresh token found. Please authenticate again.',
                 401,
-                'MISSING_TOKENS'
+                'MISSING_REFRESH_TOKEN'
             );
         }
 
         const params = new URLSearchParams({
             grant_type: 'refresh_token',
+            refresh_token: userToken.refresh_token,
             client_id: config.clientId,
-            client_secret: config.clientSecret,
-            refresh_token: userToken.refresh_token
+            client_secret: config.clientSecret
         });
 
         const response = await axios.post(`${config.loginUrl}${TOKEN_ENDPOINT}`, params, {
@@ -265,16 +297,18 @@ async function refreshAccessToken(userId) {
             }
         });
 
-        userTokens.set(userId, {
-            ...userToken,
-            access_token: response.data.access_token,
+        // Keep existing refresh_token if not provided in response
+        const newToken = {
+            ...response.data,
+            refresh_token: response.data.refresh_token || userToken.refresh_token,
+            instance_url: response.data.instance_url || userToken.instance_url,
             expires_at: Date.now() + (response.data.expires_in * 1000)
-        });
+        };
 
-        // Save tokens after updating
+        userTokens.set(userId, newToken);
         saveTokens(userTokens);
 
-        return userTokens.get(userId).access_token;
+        return newToken;
     } catch (error) {
         throw analyzeApiError(error);
     }
@@ -282,18 +316,14 @@ async function refreshAccessToken(userId) {
 
 // Helper functie om te checken of we tokens hebben
 function hasTokens(userId) {
-    const userToken = userTokens.get(userId);
-    return !!userToken?.access_token && !!userToken?.refresh_token;
+    return userTokens.has(userId);
 }
 
 // Helper functie om te controleren of een token verlopen is
-function isTokenExpired(userId) {
-    const userToken = userTokens.get(userId);
-    if (!userToken) return true;
-    
-    // Voeg een veiligheidsmarge toe van 5 minuten
-    const safetyMargin = 5 * 60 * 1000; // 5 minuten in milliseconds
-    return Date.now() >= (userToken.expires_at - safetyMargin);
+function isTokenExpired(userToken, safetyMargin = 60000) {
+    if (!userToken || !userToken.expires_at) return true;
+    const expiryTime = parseInt(userToken.expires_at);
+    return isNaN(expiryTime) || Date.now() >= (expiryTime - safetyMargin);
 }
 
 // Functie om een geldig access token te krijgen
@@ -308,7 +338,7 @@ async function getValidAccessToken(userId) {
             );
         }
 
-        if (isTokenExpired(userId)) {
+        if (isTokenExpired(userToken)) {
             console.log('Access token expired, refreshing...');
             await refreshAccessToken(userId);
         }

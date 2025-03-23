@@ -9,6 +9,7 @@ yarn-error.log
 .env.local
 .env.*.local
 .tokens.json
+.verifiers.json
 
 # Build output
 dist/
