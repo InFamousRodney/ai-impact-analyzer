@@ -36,3 +36,12 @@ temp/
 # Salesforce specific
 .sfdx/
 *.sfdx
+
+# Microsoft Office files
+~$*
+*.docx
+*.xlsx
+*.pptx
+*.doc
+*.xls
+*.ppt
