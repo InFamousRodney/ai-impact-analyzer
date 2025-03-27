@@ -1,7 +1,17 @@
+const metadataService = require('./metadataService');
+const ImpactAnalyzer = require('./impactAnalyzer');
+
 async function setupServices() {
-    // Initialize external services (Salesforce, AI models, etc.)
-    // This will be implemented as we build the application
-    console.log('Setting up external services...');
+    // Initialize services
+    const impactAnalyzer = new ImpactAnalyzer(metadataService);
+    
+    // Export services
+    module.exports = {
+        metadataService,
+        impactAnalyzer
+    };
+
+    console.log('Services initialized successfully');
 }
 
 module.exports = {
